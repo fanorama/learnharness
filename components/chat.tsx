@@ -2024,13 +2024,27 @@ function DockOverlay({
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (!el) return;
+		// The cap covers the question area ALONE: everything else in the
+		// block (footer, stats bar, padding) is chrome that must fit in the
+		// column too, or the area's top end is clipped above the column and
+		// no inner scroll can reach it. chrome = block − scroll area, which
+		// is invariant to the cap itself, so re-measuring cannot loop.
 		const measure = () => {
 			setSbInset(Math.round((el.offsetWidth - el.clientWidth) / 2));
-			setDockMaxH(Math.max(el.clientHeight - 32, 160));
+			const block = blockRef.current;
+			const area = block?.querySelector<HTMLElement>("[data-dock-scroll]");
+			const chrome = block && area ? block.offsetHeight - area.offsetHeight : 0;
+			setDockMaxH(Math.max(el.clientHeight - 32 - chrome, 160));
 		};
 		measure();
 		window.addEventListener("resize", measure);
-		return () => window.removeEventListener("resize", measure);
+		const block = blockRef.current;
+		const ro = block ? new ResizeObserver(measure) : null;
+		if (block) ro?.observe(block);
+		return () => {
+			window.removeEventListener("resize", measure);
+			ro?.disconnect();
+		};
 	}, [scrollRef]);
 
 	// GROWTH MUTE (owner round, 2026-10-05 — the generation churn): during a
@@ -2075,6 +2089,15 @@ function DockOverlay({
 			if (e.deltaY === 0) return;
 			for (let n = e.target as HTMLElement | null; n && n !== root; n = n.parentElement) {
 				if (n instanceof HTMLElement && canScroll(n, e.deltaY)) return; // native
+				// The question area owns the wheel while the cursor is over it
+				// (owner, 2026-10-27): at its edge the delta is swallowed, not
+				// chained to the transcript — the dock neither scrolls the page
+				// nor folds. Content that fits has no scroll to own, so it
+				// still forwards.
+				if (n instanceof HTMLElement && n.hasAttribute("data-dock-scroll") && n.scrollHeight - n.clientHeight >= 2) {
+					e.preventDefault();
+					return;
+				}
 			}
 			e.preventDefault();
 			el.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1);
