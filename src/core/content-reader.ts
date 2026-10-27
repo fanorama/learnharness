@@ -196,7 +196,10 @@ export function recoverDocumentLayout(text: string): string {
 		if (/^(?:[A-Za-z]:[\\/]|https?:\/\/|\/)/.test(word + whole)) return whole;
 		return slashes.slice(0, -1) + "\n" + name.slice(1);
 	});
-	const projected = spans.map(span => ({ span, body: span.kind === "math" ? outsideTexComments(span.body, decode) : span.kind === "code" ? span.raw : decode(span.raw) }));
+	// A fence written on ONE line with literal `\n` is parsed as inline code,
+	// not a fence. A real fence always spans lines, so it stays verbatim.
+	const flattenedFence = (raw: string) => /^`{3,}/.test(raw) && !/[\r\n]/.test(raw);
+	const projected = spans.map(span => ({ span, body: span.kind === "math" ? outsideTexComments(span.body, decode) : span.kind === "code" ? (flattenedFence(span.raw) ? decode(span.raw) : span.raw) : decode(span.raw) }));
 	let out = "";
 	for (let i = 0; i < projected.length; i++) {
 		const { span, body } = projected[i]!;

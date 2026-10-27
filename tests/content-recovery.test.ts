@@ -114,3 +114,13 @@ test("recovery converges after one pass, including multiple debris characters", 
 		assert.equal(repairMathForDisplay(once), once);
 	}
 });
+test("a fence flattened onto one line with literal document escapes recovers as a real fence", () => {
+	const source = math`Perhatikan kode berikut:\n\n` + "```jsx" + math`\nconst a = 1;\nconsole.log(a);\n` + "```" + math`\n\nChild ` + "`useContext`" + " ok.";
+	assert.equal(repairMathForDisplay(source), "Perhatikan kode berikut:\n\n```jsx\nconst a = 1;\nconsole.log(a);\n```\n\nChild `useContext` ok.");
+});
+test("real multi-line fences and plain inline code keep literal backslash-n", () => {
+	const fence = "First.\n\n```js\nconsole.log(\"a\\n\");\n```\n\nSecond.";
+	assert.equal(repairMathForDisplay(fence), fence);
+	const inline = math`First.\n\nSecond: ` + "`" + math`\n` + "` is a newline.";
+	assert.equal(repairMathForDisplay(inline), "First.\n\nSecond: `" + math`\n` + "` is a newline.");
+});
