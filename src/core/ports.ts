@@ -149,6 +149,8 @@ export interface CreateJobInit {
 	activity?: string;
 	/** Saved on the job before its worker is spawned. */
 	input?: unknown;
+	/** The failed attempt (job id) this job retries. */
+	retryOf?: string;
 }
 
 /** Mergeable fields — identity (id, kind, chatId, toolCallId, createdAt) is immutable. */

@@ -26,6 +26,7 @@ import * as path from "node:path";
 import type { ModelRole } from "../../../config.ts";
 import { ROLE_SLOT, modelsNotConfigured, type ModelSlotName, type ProviderKeyMissing } from "../../core/settings.ts";
 import type { ChatStore, JobStore } from "../../core/ports.ts";
+import { resolveJobInput } from "../../core/job-input.ts";
 import { runDemoBuilder } from "./demo-builder.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
@@ -279,22 +280,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		job: JobRecord,
 		input: JobToolInput | undefined,
 	): JobToolInput | undefined {
-		if (input) return input;
-		if (job.input !== undefined) return job.input as JobToolInput;
-		const chat = chatStore.getChat(job.chatId);
-		if (!chat) return undefined;
-		// Wave D: the record is native history — the scan reads the native
-		// assistant blocks directly (a toolCall's arguments are the input).
-		for (const m of chat.messages) {
-			if ((m as { role?: string }).role !== "assistant") continue;
-			const content = (m as { content?: unknown }).content;
-			if (!Array.isArray(content)) continue;
-			for (const block of content as Array<{ type?: string; id?: string; arguments?: unknown }>) {
-				if (block.type !== "toolCall" || block.id !== job.toolCallId) continue;
-				return block.arguments as JobToolInput | undefined;
-			}
-		}
-		return undefined;
+		if (input || job.input !== undefined) return resolveJobInput<JobToolInput>(job, undefined, input);
+		return resolveJobInput<JobToolInput>(job, chatStore.getChat(job.chatId)?.messages);
 	}
 
 	/**

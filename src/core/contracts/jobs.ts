@@ -23,6 +23,9 @@ export interface JobRecord {
 	toolCallId: string;
 	/** Dispatch-time arguments, saved before spawn. Older jobs resolve from history. */
 	input?: unknown;
+	/** The failed attempt (job id) this job retries. A job some other job
+	 * names here is superseded; the dispatch card shows the newest attempt. */
+	retryOf?: string;
 	/** Session-owned delivery, independent of the worker's terminal outcome.
 	 * Absent on legacy records: old terminal jobs must never be replayed. */
 	delivery?: { kind: "result" | "abort"; status: "pending" | "delivered" };
