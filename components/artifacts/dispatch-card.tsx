@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext } from "react";
+import { useContext, useRef, useState } from "react";
 import { CheckIcon, SettingsIcon, XIcon } from "lucide-react";
 import { JobsContext } from "@/components/jobs-context";
 import { ChatActionsContext } from "@/components/chat";
@@ -18,6 +18,10 @@ import { BrailleSpinner } from "@/components/braille-spinner";
  *   done/error  → quiet one-liner ("finished" / "failed") — the artifact
  *                 itself arrives in the steer message right below, so the
  *                 box must not duplicate it.
+ *
+ * A failed demo can be retried (issue #425): the retry is a NEW job for the
+ * same toolCallId (JobRecord.retryOf names the attempt it replaces), and the
+ * card always follows the newest attempt.
  */
 const KIND_LABEL: Record<JobKind, string> = {
 	research: "Research agent",
@@ -26,9 +30,22 @@ const KIND_LABEL: Record<JobKind, string> = {
 	pdf: "PDF reader",
 };
 
+/** The attempt a card follows: among the jobs fulfilling this tool part,
+ *  the newest one that no retry has superseded. */
+function newestAttempt(jobs: readonly JobRecord[], toolCallId: string): JobRecord | null {
+	const attempts = jobs.filter((j) => j.toolCallId === toolCallId);
+	const superseded = new Set(attempts.flatMap((j) => (j.retryOf ? [j.retryOf] : [])));
+	const current = attempts.filter((j) => !superseded.has(j.id));
+	let newest: JobRecord | null = null;
+	for (const j of current.length > 0 ? current : attempts) {
+		if (!newest || j.createdAt.localeCompare(newest.createdAt) > 0) newest = j;
+	}
+	return newest;
+}
+
 export function DispatchCard({ toolCallId, kind }: { toolCallId: string; kind: JobKind }) {
 	const jobs = useContext(JobsContext);
-	const job = jobs.find((j) => j.toolCallId === toolCallId) ?? null;
+	const job = newestAttempt(jobs, toolCallId);
 	const label = KIND_LABEL[kind];
 
 	if (!job || job.status === "running") {
@@ -49,13 +66,62 @@ export function DispatchCard({ toolCallId, kind }: { toolCallId: string; kind: J
 	const failed = job.status === "error";
 	return (
 		<div
-			className="flex items-center gap-2 text-xs text-muted-foreground"
+			className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
 			data-testid="dispatch-settled"
 		>
 			{failed ? <XIcon className="size-3.5 text-red-500" /> : <CheckIcon className="size-3.5" />}
 			<span className="font-medium uppercase tracking-wide">{label}</span>
 			<span>{failed ? "failed" : "finished"}</span>
+			{failed && kind === "demo" && <DemoRetry key={job.id} job={job} />}
 		</div>
+	);
+}
+
+/** Retry for a failed demo: asks the server for a fresh attempt from the
+ *  original request. After a successful request the button stays "Retrying…"
+ *  until the jobs feed brings the new attempt (the card then re-keys); a
+ *  failed request leaves the button clickable. */
+function DemoRetry({ job }: { job: JobRecord }) {
+	const [retrying, setRetrying] = useState(false);
+	const [failed, setFailed] = useState(false);
+	const inFlight = useRef(false);
+
+	async function retry() {
+		if (inFlight.current) return;
+		inFlight.current = true;
+		setRetrying(true);
+		setFailed(false);
+		try {
+			const res = await fetch("/api/jobs", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ chatId: job.chatId, jobId: job.id }),
+			});
+			if (!res.ok) throw new Error(`retry failed (${res.status})`);
+		} catch {
+			inFlight.current = false;
+			setRetrying(false);
+			setFailed(true);
+		}
+	}
+
+	return (
+		<>
+			<button
+				type="button"
+				data-testid="dispatch-retry"
+				disabled={retrying}
+				onClick={() => void retry()}
+				className="ml-1 rounded-sm border border-border bg-card px-2 py-0.5 font-ui normal-case tracking-normal text-foreground transition-colors hover:border-muted-foreground/50 disabled:cursor-default disabled:opacity-60"
+			>
+				{retrying ? "Retrying…" : "Retry"}
+			</button>
+			{failed && (
+				<span role="alert" data-testid="dispatch-retry-error" className="text-red-500">
+					Could not retry the demo. Try again.
+				</span>
+			)}
+		</>
 	);
 }
 

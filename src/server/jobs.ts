@@ -61,11 +61,14 @@ import {
 	buildAbortSteer,
 	buildSubagentSteer,
 	isSubagentFailure,
+	type DemoToolInput,
 	steerDelivered,
 	type JobRecord,
 	type SteerMessage,
 } from "../core/contracts.ts";
 import type { TurnInput } from "../core/input-events.ts";
+import { resolveJobInput } from "../core/job-input.ts";
+import { isModelsRefusal, isProviderKeyRefusal } from "../core/settings.ts";
 import { hasUnresolvedQuestion, endsInDismissal, endsInQuestionRecovery, type LhMessage } from "../core/native-messages.ts";
 import { fireJobAbort, isJobLive } from "../agent/subagents/aborts.ts";
 import { stores, effectiveSettings } from "./stores.ts";
@@ -765,4 +768,69 @@ export function recoverStaleJobs(): void {
 export function listJobs(chatId: string): JobRecord[] {
 	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
 	return stores.jobStore.listJobs(chatId);
+}
+
+// ─── demo retry ──────────────────────────────────────────────────────────────
+
+const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** Outcome of a retry request — the route maps `status` straight to HTTP. */
+export type RetryDemoOutcome =
+	| { ok: true; created: boolean; job: JobRecord }
+	| { ok: false; status: 400 | 404 | 409 | 503; error: string };
+
+function retryFailure(status: 400 | 404 | 409 | 503, error: string): RetryDemoOutcome {
+	return { ok: false, status, error };
+}
+
+/**
+ * RETRY A FAILED DEMO (issue #425): start a fresh job attempt from the
+ * failed attempt's own request. The failed record is never touched (status,
+ * usage, delivery stay as they were) and no learner message is added — the
+ * new attempt delivers through the ordinary wake pipeline when it settles.
+ *
+ * Everything is validated before any work starts. The check-then-create
+ * section holds no awaits, so a repeated request finds the successor the
+ * first one created (idempotent: one successor per failed attempt).
+ */
+export function retryDemoJob(chatId: unknown, jobId: unknown): RetryDemoOutcome {
+	if (typeof chatId !== "string" || !ID_PATTERN.test(chatId)) return retryFailure(400, "Invalid chatId");
+	if (typeof jobId !== "string" || !ID_PATTERN.test(jobId)) return retryFailure(400, "Invalid jobId");
+
+	const chat = stores.chatStore.getChat(chatId);
+	if (!chat) return retryFailure(404, "Unknown chat");
+	const failed = stores.jobStore.getJob(jobId);
+	if (!failed || failed.chatId !== chatId) return retryFailure(404, "Unknown job");
+	if (failed.kind !== "demo") return retryFailure(409, "Only demo jobs can be retried");
+	if (failed.status !== "error") return retryFailure(409, "Only a failed demo can be retried");
+	if (isModelsRefusal(failed.error) || isProviderKeyRefusal(failed.error)) {
+		return retryFailure(409, "This demo needs model or key setup, not a retry");
+	}
+
+	const existing = stores.jobStore.listJobs(chatId).find((job) => job.retryOf === jobId);
+	if (existing) return { ok: true, created: false, job: existing };
+
+	const input = resolveJobInput<Partial<DemoToolInput>>(failed, chat.messages);
+	if (typeof input?.title !== "string" || !input.title.trim() || typeof input.brief !== "string" || !input.brief.trim()) {
+		return retryFailure(409, "The original demo request is unavailable");
+	}
+
+	const respawn = state().respawn;
+	if (!respawn) return retryFailure(503, "Demo builder is not available");
+
+	const job = stores.jobStore.createJob({
+		kind: "demo",
+		chatId,
+		toolCallId: failed.toolCallId,
+		input: { title: input.title, brief: input.brief } satisfies DemoToolInput,
+		retryOf: failed.id,
+	});
+	try {
+		respawn(job.id);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		stores.jobStore.updateJob(job.id, { status: "error", error: reason, activity: "failed" });
+		return retryFailure(503, "Could not start the demo builder");
+	}
+	return { ok: true, created: true, job };
 }

@@ -1,4 +1,4 @@
-import { isTurnRunning, listJobs } from "@/src/server";
+import { isTurnRunning, listJobs, retryDemoJob } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -20,4 +20,20 @@ export async function GET(req: Request) {
 		return Response.json({ error: "Invalid chatId" }, { status: 400 });
 	}
 	return Response.json({ jobs: listJobs(chatId), turnInFlight: isTurnRunning(chatId) });
+}
+
+/**
+ * Retry a failed demo (issue #425): body {chatId, jobId} names the failed
+ * attempt. Starts a fresh attempt from its original request and returns the
+ * new job; a repeated request returns the same successor. The status codes
+ * come straight from retryDemoJob's validation.
+ */
+export async function POST(req: Request) {
+	const body = (await req.json().catch(() => null)) as { chatId?: unknown; jobId?: unknown } | null;
+	if (!body || typeof body !== "object") {
+		return Response.json({ error: "A JSON body with chatId and jobId is required" }, { status: 400 });
+	}
+	const outcome = retryDemoJob(body.chatId, body.jobId);
+	if (!outcome.ok) return Response.json({ error: outcome.error }, { status: outcome.status });
+	return Response.json({ job: outcome.job }, { status: outcome.created ? 201 : 200 });
 }
